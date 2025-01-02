@@ -5,19 +5,22 @@
 # simulated measurements, incorporating noise and applying constraints to the optimization problem. It demonstrates an 
 # application-centric approach to system design, blending physical simulations with computational optimization techniques.
 ###########################################################################################################################
+
 from multiprocessing import Pool
 import numpy as np
 import time
 from datetime import datetime
 from scipy.optimize import minimize
+from scipy.io import loadmat
+import math
 
 # Ensuring reproducibility of results by fixing the random seed
 np.random.seed(10)
 # Base vectors (assume known)
 
 # Defining base vectors
-a = np.array([np.sqrt(3)/2, 1/2])  # Example base vector a
-b = np.array([np.sqrt(3)/2, -1/2])  # Example base vector b, forming a 60-degree angle with a
+a = np.array([1, 0])  # Example base vector a
+b = np.array([0, 1])  # Example base vector b, forming a 60-degree angle with a
 
 # Defining true rotation angle theta and offset U for simulation purposes
 theta_true = np.pi/12  # 30 degrees
@@ -28,7 +31,7 @@ T_true = np.array([[np.cos(theta_true), -np.sin(theta_true)], [np.sin(theta_true
 
 
 # Setting up a grid for simulation
-value_range = 10000 # Range of values for the grid
+value_range = 100 # Range of values for the grid
 grids_X, grids_Y = np.meshgrid(np.arange(1, value_range + 1), np.arange(1, value_range + 1))
 
 all_pairs = np.vstack([grids_X.flatten().reshape(1, -1), grids_Y.flatten().reshape(1, -1)]).T
@@ -75,7 +78,7 @@ def compute_position(best_m_n, theta, U):
 
 
 
-m_n_range = 2  # Adjust based on expected lattice size
+m_n_range = 2  # Adjust based on expected lattice size000
 
 Ms, Ns = np.meshgrid(np.arange(-m_n_range, m_n_range + 1), np.arange(-m_n_range, m_n_range + 1))
 Ms = Ms.flatten().reshape(-1, 1)
@@ -138,8 +141,11 @@ def build_log_likelihood_function(M, sigma, seed_noise=False, seed_emitter=False
         v_beforeOffset = (measurements - U)
         vector = np.matmul(R.T, v_beforeOffset.T).T
         # vector = np.transpose(vector).reshape(M,N,2)
-        m_max = np.round(2/3*(2*np.dot(vector,a)-np.dot(vector,b))).reshape((M,1))
-        n_max = np.round(2/3*(2*np.dot(vector,b)-np.dot(vector,a))).reshape((M,1))
+        # m_max = np.round(2/3*(2*np.dot(vector,a)-np.dot(vector,b))).reshape((M,1))
+        # n_max = np.round(2/3*(2*np.dot(vector,b)-np.dot(vector,a))).reshape((M,1))
+
+        m_max = np.round(np.dot(vector,a)).reshape((M,1))
+        n_max = np.round(np.dot(vector,b)).reshape((M,1))
         # vector_AroundOrigin = vector - (m_max * np.transpose(a) + n_max * np.transpose(b));
         vector_AroundOrigin = measurements - (np.matmul(R,(m_max * a + n_max * b).T).T);
         assert vector_AroundOrigin.shape == (M, 2)
@@ -151,7 +157,7 @@ def build_log_likelihood_function(M, sigma, seed_noise=False, seed_emitter=False
         ll = -np.sum((predicted_positions - vector_AroundOrigin)**2)
         if (return_predicted_positions):
             # return (best_m_n + np.concatenate(((m_max,n_max)),axis=1))
-            return compute_position((best_m_n + np.concatenate(((m_max,n_max)),axis=1)),theta,U)
+            return compute_position((best_m_n + np.concatenate(((m_max,n_max)),axis=1)),theta,U),(best_m_n + np.concatenate(((m_max,n_max)),axis=1))
         return -ll
     
     return log_likelihood,positions,measurements
@@ -177,57 +183,30 @@ def perform_sweep(M,sigma,seed_emitter = False, seed_noise = False):
         return np.abs(ux)/np.sqrt(3) - np.abs(uy)
 
     constraints = [{'type': 'ineq', 'fun': constraint_uy}]  # Constraints setup
-    bounds = [(0, np.pi/3), (0, np.sqrt(3)/2), (-0.5, 0.5)]  # Bounds for theta, Ux
+    bounds = [(0, np.pi/2), (0, 1), (0, 1)]  # Bounds for theta, Ux
     result = minimize(log_likelihood, initial_guess, method = 'SLSQP',bounds = bounds,constraints=constraints)
-    predicted_positions = log_likelihood(result.x,return_predicted_positions=True)
-    return result, predicted_positions,position_labspace,measurements
-
-
+    predicted_positions,return_mn = log_likelihood(result.x,return_predicted_positions=True)
+    return result, predicted_positions,return_mn, position_labspace,measurements
 
 
 ## Multi processing to accelerates
-# def function_wrapper(param):
-#   M, sigma = param
+def function_wrapper(param):
+  M, sigma = param
 
-#   return perform_sweep(M, sigma, seed_emitter=True, seed_noise=False)
+  return perform_sweep(M, sigma, seed_emitter=True, seed_noise=False)
 
-# M_values = [10,100]*3; 
-# sigma_sweepNumber = 2
-# sigma_values = np.logspace(-2,1,sigma_sweepNumber)
-# if __name__ == "__main__":
-#     N_processes = 31
-#     pool = Pool(N_processes)
-
-    
-#     param_pairs = [[M, sigma] for M in M_values for sigma in sigma_values]
-#     print(param_pairs)
-#     print(M_values)
-    # t1 = time.time()
-    # print(f"Running {len(param_pairs)} parameter pairs on {N_processes} processes. Startnig at {datetime.now()}")
-    # ret = pool.map(function_wrapper, param_pairs)
-    # t2 = time.time()
-    # print(f"Finished in {t2-t1} seconds at {datetime.now()}")
-
-    #     N_params = len(param_pairs)
-#     loglikelihood_functions = np.zeros((len(M_values), len(sigma_values), stepNumber, stepNumber))
-
-#     for _i in range(N_params):
-#         sigma_index = _i % len(sigma_values)
-#         M_index = _i // len(sigma_values)
-#         res = ret[_i]
-#         initial_guess = []
-#         loglikelihood_functions[M_index, sigma_index, :, :] = res
 
 
 # Define digital twin parameters
-M_value = 100000; 
-sigma_sweepNumber = 2
+M_value = 5; 
+sigma_sweepNumber = 50
 sigma_values = np.logspace(-2,1,sigma_sweepNumber)
-N = 100
+N = 31*4
 
 # Initialize predicted positions
 fitted_positions = np.zeros([sigma_sweepNumber,N,M_value,2])
 original_measurements = np.zeros([sigma_sweepNumber,N,M_value,2])
+fitted_mn = np.zeros([sigma_sweepNumber,N,M_value,2])
 t1 = time.time()
 
 # Sweep across different sigma values
@@ -239,13 +218,13 @@ for _j, sigma in (enumerate(sigma_values)):
         # Call the optimization function
         res = perform_sweep(M_value, sigma, seed_emitter=True, seed_noise=False)
         # Unwrap the results in the right orders
-        original_positions = res[2]
+        original_positions = res[3]
         fitted_positions[_j,i,:,:] = res[1]
-        original_measurements[_j,i,:,:] = res[3]
-    t4 = time.time()
-    print(t4-t3)
+        fitted_mn[_j,i,:,:] = res[2]
+        original_measurements[_j,i,:,:] = res[4]
 t2 = time.time()
 print(t2-t1)
-np.savez(f"minimize_xi_sigma_M{M_value}.npz", sigma_values=sigma_values, 
+np.savez(f"minimize_xi_sigma_M{M_value}_returnMN.npz", sigma_values=sigma_values, 
             M_values=M_value, predicted_positions=fitted_positions,original_positions = original_positions, original_measurements = original_measurements)
+
 

@@ -15,218 +15,181 @@ import math
 
 # Ensuring reproducibility of results by fixing the random seed
 np.random.seed(10)
+# Base vectors (assume known)
 
-# Defining base vectors for the lattice structure
-# a and b are the basis vectors forming the 2D lattice
-a = np.array([1, 0])  # Base vector a (aligned with x-axis)
-b = np.array([0, 1])  # Base vector b (aligned with y-axis, forming a 90-degree angle with a)
+# Defining base vectors
+a = np.array([1, 0])  # Example base vector a
+b = np.array([0, 1])  # Example base vector b, forming a 60-degree angle with a
 
-# Load experimental data from a .mat file
-# This includes actual emitter positions
+# Import measured position from experiments
 data = loadmat('/home/sophiayd/Dropbox (MIT)/MIT/Research/FDTD/Report/EmitterDiscrete/expMeanPosition.mat')
-positions = data['pos']  # Extracting the position of the quantum emitters from the data
+positions = data['pos']
+
+
 
 # Function to compute the position of emitters based on the optimization parameters
-# best_m_n: Best-fit lattice indices (m, n)
-# theta: Rotation angle
-# U: Offset vector in the lab space
 def compute_position(best_m_n, theta, U):
-    M = best_m_n.shape[0]  # Number of emitters
-    # Create the rotation matrix using the angle theta
+    M = best_m_n.shape[0]
     R = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
-    
-    # Ensure best_m_n is Mx2 (i.e., it has two components: m and n)
+    # best_m_n is Mx2
     assert best_m_n.shape == (M, 2), print(best_m_n.shape)
-    
-    # Convert lattice indices (m, n) into real space coordinates using the base vectors a and b
-    lattice_points_in_lattice_space = best_m_n[:, 0:1]*a + best_m_n[:, 1:] * b
+    lattice_points_in_lattice_space = best_m_n[:, 0:1]* a + best_m_n[:, 1:] * b
     assert lattice_points_in_lattice_space.shape == (M, 2)
-    
-    # Apply the rotation matrix and offset U to convert lattice positions to lab space
     return np.dot(R, lattice_points_in_lattice_space.T).T + U
 
 
-# Range of the lattice to consider for the search
-m_n_range = 2  # Adjust this based on the expected lattice size
 
-# Create mesh grid for the possible m and n values
+m_n_range = 2  # Adjust based on expected lattice size000
+
 Ms, Ns = np.meshgrid(np.arange(-m_n_range, m_n_range + 1), np.arange(-m_n_range, m_n_range + 1))
 Ms = Ms.flatten().reshape(-1, 1)
 Ns = Ns.flatten().reshape(-1, 1)
-
-# Calculate lattice positions in lattice space
 lattice_positions = Ms * a + Ns * b
 lattice_positions = lattice_positions.reshape(1, 2*m_n_range+1, 2*m_n_range+1, 2)
 assert lattice_positions.shape == (1, 2*m_n_range+1, 2*m_n_range+1, 2)
 
-# Function to match computed positions to the lattice
-# theta: Rotation angle, U: Offset, positions: Actual positions of emitters
+# Function to match the computed positions to a predefined lattice structure
 def match_to_lattice(theta, U, positions):
-    M = positions.shape[0]  # Number of emitters
-    # Rotation matrix based on theta
+    M = positions.shape[0]
     R = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
-    
-    # Transform lattice positions to the lab space using rotation and offset
     lattice_positions_in_lab_space = np.einsum("ij,lmnj->lmni", R, lattice_positions) + U
     assert lattice_positions_in_lab_space.shape == (1, 2*m_n_range+1, 2*m_n_range+1, 2)
 
-    # Calculate the Euclidean distances between the actual positions and lattice points
+    # positions is a Mx2 array
+    # lattice_positions is a 1x(2*m_n_range+1)x(2*m_n_range+1)x2 array
+    # returns a Mx(2*m_n_range+1)x(2*m_n_range+1) array
     distances = np.sum((lattice_positions_in_lab_space - positions.reshape(M, 1, 1, 2))**2, axis=3)
     assert distances.shape == (M, 2*m_n_range+1, 2*m_n_range+1), print(distances.shape)
 
-    # Find the closest lattice point (m, n) for each emitter
+    # take the minimum around axis 1 and 2
     distances = distances.reshape(M, -1)
     best_m_n = np.argmin(distances, axis=1)
     assert best_m_n.shape == (M,), print(best_m_n.shape)
-    
-    # Convert flat indices back to (m, n) grid coordinates
     best_m, best_n = np.unravel_index(best_m_n, (2*m_n_range+1, 2*m_n_range+1))
     best_m_n = np.array([best_m, best_n]).T
     assert best_m_n.shape == (M, 2), print(best_m_n.shape)
     
-    # Adjust the indices to be within the valid range of -m_n_range to m_n_range
+    # mn is within the range of -m_n_range to m_n_range
+    # we need to convert it to the actual m and n
     best_m_n = best_m_n - m_n_range
+    # check if this is within range
     assert np.all(np.abs(best_m_n) <= m_n_range)
     assert best_m_n.shape == (M, 2), print(best_m_n.shape)
     return best_m_n
 
-# Builds the log-likelihood function for optimization
-# M: Number of emitters, sigma: Noise level, seed_noise/seed_emitter: Seeds for randomness
+# Builds the log-likelihood function needed for optimization, simulating the positions and measurements
 def build_log_likelihood_function(M, sigma, seed_noise=False, seed_emitter=False):
     if seed_emitter:
-        np.random.seed(0)  # Seed for emitters
+        np.random.seed(0)
     else:
-        np.random.seed(int(time.time()*1000) % (2**32))  # Use current time for randomness
+        np.random.seed(int(time.time()*1000)%(2**32))        
 
     if seed_noise:
-        np.random.seed(0)  # Seed for noise
+        np.random.seed(0)
     else:
-        np.random.seed(int(time.time()*1000) % (2**32))  # Use current time for noise generation
-    
-    # Generate noisy measurements based on actual positions and noise level sigma
+        np.random.seed(int(time.time()*1000)%(2**32))          
     measurements = np.random.normal(positions, sigma, (M, 2))
 
-    # Define the log-likelihood function for optimization
-    def log_likelihood(params, return_predicted_positions=False):
-        theta = params[0]  # Rotation angle
-        u_x = params[1]    # x-component of offset
-        u_y = params[2]    # y-component of offset
+    # # Modified log-likelihood function that uses match_to_lattice
+    def log_likelihood(params, return_predicted_positions = False):
+        theta= params[0]
+        u_x = params[1]
+        u_y = params[2]
 
-        U = np.array([u_x, u_y])  # Offset vector
-        R = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])  # Rotation matrix
-        
-        # Subtract the offset and rotate the measurements to align them with the lattice
+        U = np.array([u_x, u_y])
+        R = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
         v_beforeOffset = (measurements - U)
         vector = np.matmul(R.T, v_beforeOffset.T).T
-        
-        # Round to nearest lattice point in the a and b directions
-        m_max = np.round(np.dot(vector, a)).reshape((M, 1))
-        n_max = np.round(np.dot(vector, b)).reshape((M, 1))
-        
-        # Calculate positions relative to the lattice
-        vector_AroundOrigin = measurements - (np.matmul(R, (m_max * a + n_max * b).T).T)
+        # vector = np.transpose(vector).reshape(M,N,2)
+        # m_max = np.round(2/3*(2*np.dot(vector,a)-np.dot(vector,b))).reshape((M,1))
+        # n_max = np.round(2/3*(2*np.dot(vector,b)-np.dot(vector,a))).reshape((M,1))
+
+        m_max = np.round(np.dot(vector,a)).reshape((M,1))
+        n_max = np.round(np.dot(vector,b)).reshape((M,1))
+        # vector_AroundOrigin = vector - (m_max * np.transpose(a) + n_max * np.transpose(b));
+        vector_AroundOrigin = measurements - (np.matmul(R,(m_max * a + n_max * b).T).T);
         assert vector_AroundOrigin.shape == (M, 2)
-        
-        # Match the calculated positions to the nearest lattice points
+        #Relocate to the origin to find the max integer of m and n pair
         best_m_n = match_to_lattice(theta, U, vector_AroundOrigin)
         assert best_m_n.shape == (M, 2), print(best_m_n.shape)
-        
-        # Compute the predicted positions based on the matched lattice points
         predicted_positions = compute_position(best_m_n, theta, U)
         assert predicted_positions.shape == (M, 2)
-        
-        # Calculate the log-likelihood based on the difference between predicted and actual positions
         ll = -np.sum((predicted_positions - vector_AroundOrigin)**2)
-        if return_predicted_positions:
-            return compute_position((best_m_n + np.concatenate((m_max, n_max), axis=1)), theta, U), (best_m_n + np.concatenate((m_max, n_max), axis=1))
+        if (return_predicted_positions):
+            # return (best_m_n + np.concatenate(((m_max,n_max)),axis=1))
+            return compute_position((best_m_n + np.concatenate(((m_max,n_max)),axis=1)),theta,U),(best_m_n + np.concatenate(((m_max,n_max)),axis=1))
         return -ll
-
-    return log_likelihood, positions, measurements
-
-# Testing the log-likelihood function with an example case
-M = 10
-sigma = 0
-test_log_likelihood, _, _ = build_log_likelihood_function(M, sigma)
-
-# Optimization function to perform the parameter sweep and find the best transformation parameters
-def perform_sweep(M, sigma, seed_emitter=False, seed_noise=False):
-    # Build the log-likelihood function
-    log_likelihood, position_labspace, measurements = build_log_likelihood_function(M, sigma, seed_emitter=seed_emitter, seed_noise=seed_noise)
-
-    # Set the initial guess for the optimization (theta, U_x, U_y)
-    initial_guess = [np.pi/12, 0.5, 0.2]  # 30 degrees, and initial offsets
     
-    # Constraint function for the optimization (ensures valid U_y values)
+    return log_likelihood,positions,measurements
+
+
+# Function to perform the optimization sweep, finding the best parameters that match the simulated measurements
+def perform_sweep(M,sigma,seed_emitter = False, seed_noise = False):
+
+    log_likelihood,position_labspace,measurements = build_log_likelihood_function(M, sigma, seed_emitter=seed_emitter, seed_noise=seed_noise)
+
+    #Initiate optimization
+    initial_guess = [14/180*np.pi, 0, 0]  # Initial guess for theta, u_x, u_y. Theta is a rough estimation from QR reference
+        # Constraint for Uy
     def constraint_uy(params):
         _, ux, uy = params
-        return np.abs(ux) / np.sqrt(3) - np.abs(uy)
+        return np.abs(ux)/np.sqrt(3) - np.abs(uy)
 
-    # Set the constraints and bounds for the optimization
-    constraints = [{'type': 'ineq', 'fun': constraint_uy}]
-    bounds = [(0, np.pi/2), (0, 1), (0, 1)]
-    
-    # Perform the optimization using SciPy's minimize function
-    result = minimize(log_likelihood, initial_guess, method='SLSQP', bounds=bounds, constraints=constraints)
-    
-    # Get the predicted positions and matched lattice indices after optimization
-    predicted_positions, return_mn = log_likelihood(result.x, return_predicted_positions=True)
-    
-    return result, predicted_positions, return_mn, position_labspace, measurements
+    constraints = [{'type': 'ineq', 'fun': constraint_uy}]  # Constraints setup
+    bounds = [(0, np.pi/2), (0, 1), (0, 1)]  # Bounds for theta, Ux
+    result = minimize(log_likelihood, initial_guess, method = 'SLSQP',bounds = bounds,constraints=constraints)
+    predicted_positions,return_mn = log_likelihood(result.x,return_predicted_positions=True)
+    return result, predicted_positions,return_mn, position_labspace,measurements
 
-# Multiprocessing wrapper function to accelerate the optimization for different parameter combinations
+
+
+
+## Multi processing to accelerates
 def function_wrapper(param):
-    M, sigma = param
-    return perform_sweep(M, sigma, seed_emitter=True, seed_noise=False)
+  M, sigma = param
+  
+  return perform_sweep(M, sigma, seed_emitter=True, seed_noise=False)
 
-# Load experimental data for emitter positions and noise levels from another .mat file
-data = loadmat('/home/sophiayd/Dropbox (MIT)/MIT/Research/FDTD/Report/SuperRes_pqh/Lattice_experiments/xySTD_QR64_46.mat')
-base = 0.31
-sigma_values = data['sigma'] / base  # Adjust sigma values based on the experimental data
-sigma_sweepNumber = sigma_values.size  # Number of sigma values
 
-N = 100  # Number of repetitions
-M_values = [positions.shape[0]] * N  # Repeated number of emitters
-
-# Main function to parallelize the optimization process
+# run for experimental data
+data = loadmat('/home/sophiayd/Dropbox (MIT)/MIT/Research/FDTD/Report/SuperRes_pqh/Lattice_experiments/xySTD_QR64_46.mat') #Import measured sigma from SMLM
+base = 0.3567
+sigma_values = data['sigma']/base
+sigma_sweepNumber = sigma_values.size
+N = 100
+M_values = [positions.shape[0]]*N; 
 if __name__ == "__main__":
-    N_processes = 30  # Number of processes to run in parallel
+    N_processes = 30
     pool = Pool(N_processes)
 
-    # Create a list of (M, sigma) parameter pairs for multiprocessing
-    param_pairs = [[M, sigma] for M in M_values for sigma in sigma_values]
     
-    # Start the timer and run the optimization across all processes
+    param_pairs = [[M, sigma] for M in M_values for sigma in sigma_values]
+    # print(param_pairs)
     t1 = time.time()
-    print(f"Running {len(param_pairs)} parameter pairs on {N_processes} processes. Starting at {datetime.now()}")
+    print(f"Running {len(param_pairs)} parameter pairs on {N_processes} processes. Startnig at {datetime.now()}")
     ret = pool.map(function_wrapper, param_pairs)
     t2 = time.time()
     print(f"Finished in {t2-t1} seconds at {datetime.now()}")
-    print(f"Simulation done")
+    print(f"simulation done")
 
-    # Initialize arrays to store results
+
     N_params = len(param_pairs)
-    fitted_positions = np.zeros([sigma_sweepNumber, len(M_values), M_values[0], 2])
-    original_measurements = np.zeros([sigma_sweepNumber, len(M_values), M_values[0], 2])
-    fitted_mn = np.zeros([sigma_sweepNumber, len(M_values), M_values[0], 2])
-    result_optimized = np.zeros([sigma_sweepNumber, len(M_values), 3])
+    fitted_positions = np.zeros([sigma_sweepNumber,len(M_values),M_values[0],2])
+    original_measurements = np.zeros([sigma_sweepNumber,len(M_values),M_values[0],2])
+    fitted_mn = np.zeros([sigma_sweepNumber,len(M_values),M_values[0],2])
+    result_optimized = np.zeros([sigma_sweepNumber,len(M_values),3])
 
-    # Collect results from each process
     for _i in range(N_params):
         sigma_index = _i % len(sigma_values)
         N_index = _i // len(sigma_values)
         res = ret[_i]
-        fitted_mn[sigma_index, N_index, :, :] = res[2]
+        fitted_mn[sigma_index, N_index,:, :] = res[2]
         original_positions = res[3]
-        fitted_positions[sigma_index, N_index, :, :] = res[1]
-        original_measurements[sigma_index, N_index, :, :] = res[4]
-        result_optimized[sigma_index, N_index, :] = res[0].x
-
-    # Save the results to a .npz file
-    np.savez(f"diamond_minimize_xi_sigma_M{M_values[0]}_returnMN_100Trail.npz", 
-             sigma_values=sigma_values, result_optimized=result_optimized,
-             M_values=M_values, predicted_positions=fitted_positions,
-             original_positions=original_positions, original_measurements=original_measurements, predicted_MN=fitted_mn)
-
+        fitted_positions[sigma_index, N_index,:, :] = res[1]
+        original_measurements[sigma_index, N_index,:, :] = res[4]
+        result_optimized[sigma_index,N_index,:] = res[0].x
+    np.savez(f"diamond_minimize_xi_sigma_M{M_values[0]}_returnMN.npz", sigma_values=sigma_values, result_optimized = result_optimized,
+            M_values=M_values, predicted_positions=fitted_positions,original_positions = original_positions, original_measurements = original_measurements, predicted_MN = fitted_mn)
 
 
 
